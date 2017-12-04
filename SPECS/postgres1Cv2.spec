@@ -1055,9 +1055,6 @@ fi
 %{pginstdir}/lib/postgres_fdw.so
 %{pginstdir}/lib/refint.so
 %{pginstdir}/lib/seg.so
-%if %ssl
-%{pginstdir}/lib/sslinfo.so
-%endif
 %if %selinux
 %{pginstdir}/lib/sepgsql.so
 %{pginstdir}/share/contrib/sepgsql.sql
@@ -1110,9 +1107,6 @@ fi
 %{pginstdir}/share/extension/postgres_fdw*
 %{pginstdir}/share/extension/refint*
 %{pginstdir}/share/extension/seg*
-%if %ssl
-%{pginstdir}/share/extension/sslinfo*
-%endif
 %{pginstdir}/share/extension/tablefunc*
 %{pginstdir}/share/extension/tcn*
 %{pginstdir}/share/extension/timetravel*

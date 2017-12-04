@@ -101,6 +101,7 @@ Source19:	%{sname}-%{pgmajorversion}-tmpfiles.d
 Source3:	%{sname}-%{pgmajorversion}.init
 %endif
 
+Patch10:         00004-postgresql-1c-9.6.patch
 Patch1:		%{sname}-%{pgmajorversion}-rpm-pgsql.patch
 Patch3:		%{sname}-%{pgmajorversion}-logging.patch
 Patch5:		%{sname}-%{pgmajorversion}-var-run-socket.patch
@@ -108,7 +109,6 @@ Patch6:		%{sname}-%{pgmajorversion}-perl-rpath.patch
 Patch7:         00001-1c_FULL_96-0.23.patch
 Patch8:         00002-online_analyze.patch
 Patch9:         00003-plantuner.patch
-Patch10:         00004-postgresql-1c-9.6.patch
 Patch11:         00005-exists_opt-2.patch
 Patch12:         00006-coalesce_cost-1.patch
 

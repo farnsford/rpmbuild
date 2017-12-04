@@ -1,0 +1,195 @@
+diff --git a/src/backend/optimizer/path/costsize.c b/src/backend/optimizer/path/costsize.c
+index 8e6861d..769c262 100644
+--- a/src/backend/optimizer/path/costsize.c
++++ b/src/backend/optimizer/path/costsize.c
+@@ -131,6 +131,7 @@ typedef struct
+ {
+ 	PlannerInfo *root;
+ 	QualCost	total;
++	bool		calccoalesce;
+ } cost_qual_eval_context;
+ 
+ static List *extract_nonindex_conditions(List *qual_clauses, List *indexquals);
+@@ -3254,6 +3255,7 @@ cost_qual_eval(QualCost *cost, List *quals, PlannerInfo *root)
+ 	context.root = root;
+ 	context.total.startup = 0;
+ 	context.total.per_tuple = 0;
++	context.calccoalesce = true;
+ 
+ 	/* We don't charge any cost for the implicit ANDing at top level ... */
+ 
+@@ -3279,6 +3281,22 @@ cost_qual_eval_node(QualCost *cost, Node *qual, PlannerInfo *root)
+ 	context.root = root;
+ 	context.total.startup = 0;
+ 	context.total.per_tuple = 0;
++	context.calccoalesce = true;
++
++	cost_qual_eval_walker(qual, &context);
++
++	*cost = context.total;
++}
++
++void
++cost_qual_eval_node_index(QualCost *cost, Node *qual, PlannerInfo *root)
++{
++	cost_qual_eval_context context;
++
++	context.root = root;
++	context.total.startup = 0;
++	context.total.per_tuple = 0;
++	context.calccoalesce = false;
+ 
+ 	cost_qual_eval_walker(qual, &context);
+ 
+@@ -3308,6 +3326,7 @@ cost_qual_eval_walker(Node *node, cost_qual_eval_context *context)
+ 			locContext.root = context->root;
+ 			locContext.total.startup = 0;
+ 			locContext.total.per_tuple = 0;
++			locContext.calccoalesce = context->calccoalesce;
+ 
+ 			/*
+ 			 * For an OR clause, recurse into the marked-up tree so that we
+@@ -3494,6 +3513,11 @@ cost_qual_eval_walker(Node *node, cost_qual_eval_context *context)
+ 		 */
+ 		return false;
+ 	}
++	else if (IsA(node, CoalesceExpr) && context->calccoalesce)
++	{
++		context->total.per_tuple += cpu_operator_cost *
++			list_length(((CoalesceExpr *) node)->args);
++	}
+ 
+ 	/* recurse into children */
+ 	return expression_tree_walker(node, cost_qual_eval_walker,
+diff --git a/src/backend/utils/adt/selfuncs.c b/src/backend/utils/adt/selfuncs.c
+index 6a4f7b1..044e65f 100644
+--- a/src/backend/utils/adt/selfuncs.c
++++ b/src/backend/utils/adt/selfuncs.c
+@@ -6269,7 +6269,7 @@ other_operands_eval_cost(PlannerInfo *root, List *qinfos)
+ 		IndexQualInfo *qinfo = (IndexQualInfo *) lfirst(lc);
+ 		QualCost	index_qual_cost;
+ 
+-		cost_qual_eval_node(&index_qual_cost, qinfo->other_operand, root);
++		cost_qual_eval_node_index(&index_qual_cost, qinfo->other_operand, root);
+ 		qual_arg_cost += index_qual_cost.startup + index_qual_cost.per_tuple;
+ 	}
+ 	return qual_arg_cost;
+diff --git a/src/include/optimizer/cost.h b/src/include/optimizer/cost.h
+index 000d37f..d3343cf 100644
+--- a/src/include/optimizer/cost.h
++++ b/src/include/optimizer/cost.h
+@@ -150,6 +150,7 @@ extern void cost_gather(GatherPath *path, PlannerInfo *root,
+ extern void cost_subplan(PlannerInfo *root, SubPlan *subplan, Plan *plan);
+ extern void cost_qual_eval(QualCost *cost, List *quals, PlannerInfo *root);
+ extern void cost_qual_eval_node(QualCost *cost, Node *qual, PlannerInfo *root);
++extern void cost_qual_eval_node_index(QualCost *cost, Node *qual, PlannerInfo *root);
+ extern void compute_semi_anti_join_factors(PlannerInfo *root,
+ 							   RelOptInfo *outerrel,
+ 							   RelOptInfo *innerrel,
+diff --git a/src/test/regress/expected/join.out b/src/test/regress/expected/join.out
+index da5843a..f73e55e 100644
+--- a/src/test/regress/expected/join.out
++++ b/src/test/regress/expected/join.out
+@@ -4660,15 +4660,15 @@ select * from
+   lateral (values(x.q1,y.q1,y.q2)) v(xq1,yq1,yq2);
+         q1        |        q2         |        q1        |        q2         |       xq1        |       yq1        |        yq2        
+ ------------------+-------------------+------------------+-------------------+------------------+------------------+-------------------
+-              123 |               456 |                  |                   |              123 |                  |                  
+-              123 |  4567890123456789 | 4567890123456789 | -4567890123456789 |              123 | 4567890123456789 | -4567890123456789
+-              123 |  4567890123456789 | 4567890123456789 |  4567890123456789 |              123 | 4567890123456789 |  4567890123456789
+-              123 |  4567890123456789 | 4567890123456789 |               123 |              123 | 4567890123456789 |               123
+- 4567890123456789 |               123 |              123 |  4567890123456789 | 4567890123456789 |              123 |  4567890123456789
+  4567890123456789 |               123 |              123 |               456 | 4567890123456789 |              123 |               456
+- 4567890123456789 |  4567890123456789 | 4567890123456789 | -4567890123456789 | 4567890123456789 | 4567890123456789 | -4567890123456789
+- 4567890123456789 |  4567890123456789 | 4567890123456789 |  4567890123456789 | 4567890123456789 | 4567890123456789 |  4567890123456789
++ 4567890123456789 |               123 |              123 |  4567890123456789 | 4567890123456789 |              123 |  4567890123456789
+  4567890123456789 |  4567890123456789 | 4567890123456789 |               123 | 4567890123456789 | 4567890123456789 |               123
++              123 |  4567890123456789 | 4567890123456789 |               123 |              123 | 4567890123456789 |               123
++ 4567890123456789 |  4567890123456789 | 4567890123456789 |  4567890123456789 | 4567890123456789 | 4567890123456789 |  4567890123456789
++              123 |  4567890123456789 | 4567890123456789 |  4567890123456789 |              123 | 4567890123456789 |  4567890123456789
++ 4567890123456789 |  4567890123456789 | 4567890123456789 | -4567890123456789 | 4567890123456789 | 4567890123456789 | -4567890123456789
++              123 |  4567890123456789 | 4567890123456789 | -4567890123456789 |              123 | 4567890123456789 | -4567890123456789
++              123 |               456 |                  |                   |              123 |                  |                  
+  4567890123456789 | -4567890123456789 |                  |                   | 4567890123456789 |                  |                  
+ (10 rows)
+ 
+@@ -4677,15 +4677,15 @@ select * from
+   lateral (select x.q1,y.q1,y.q2) v(xq1,yq1,yq2);
+         q1        |        q2         |        q1        |        q2         |       xq1        |       yq1        |        yq2        
+ ------------------+-------------------+------------------+-------------------+------------------+------------------+-------------------
+-              123 |               456 |                  |                   |              123 |                  |                  
+-              123 |  4567890123456789 | 4567890123456789 | -4567890123456789 |              123 | 4567890123456789 | -4567890123456789
+-              123 |  4567890123456789 | 4567890123456789 |  4567890123456789 |              123 | 4567890123456789 |  4567890123456789
+-              123 |  4567890123456789 | 4567890123456789 |               123 |              123 | 4567890123456789 |               123
+- 4567890123456789 |               123 |              123 |  4567890123456789 | 4567890123456789 |              123 |  4567890123456789
+  4567890123456789 |               123 |              123 |               456 | 4567890123456789 |              123 |               456
+- 4567890123456789 |  4567890123456789 | 4567890123456789 | -4567890123456789 | 4567890123456789 | 4567890123456789 | -4567890123456789
+- 4567890123456789 |  4567890123456789 | 4567890123456789 |  4567890123456789 | 4567890123456789 | 4567890123456789 |  4567890123456789
++ 4567890123456789 |               123 |              123 |  4567890123456789 | 4567890123456789 |              123 |  4567890123456789
+  4567890123456789 |  4567890123456789 | 4567890123456789 |               123 | 4567890123456789 | 4567890123456789 |               123
++              123 |  4567890123456789 | 4567890123456789 |               123 |              123 | 4567890123456789 |               123
++ 4567890123456789 |  4567890123456789 | 4567890123456789 |  4567890123456789 | 4567890123456789 | 4567890123456789 |  4567890123456789
++              123 |  4567890123456789 | 4567890123456789 |  4567890123456789 |              123 | 4567890123456789 |  4567890123456789
++ 4567890123456789 |  4567890123456789 | 4567890123456789 | -4567890123456789 | 4567890123456789 | 4567890123456789 | -4567890123456789
++              123 |  4567890123456789 | 4567890123456789 | -4567890123456789 |              123 | 4567890123456789 | -4567890123456789
++              123 |               456 |                  |                   |              123 |                  |                  
+  4567890123456789 | -4567890123456789 |                  |                   | 4567890123456789 |                  |                  
+ (10 rows)
+ 
+@@ -4712,24 +4712,24 @@ select v.* from
+   lateral (select x.q1,y.q1 union all select x.q2,y.q2) v(vx,vy);
+         vx         |        vy         
+ -------------------+-------------------
+-               123 |                  
+-               456 |                  
+-               123 |  4567890123456789
+-  4567890123456789 | -4567890123456789
++  4567890123456789 |               123
++               123 |               456
++  4567890123456789 |               123
+                123 |  4567890123456789
+   4567890123456789 |  4567890123456789
+-               123 |  4567890123456789
+-  4567890123456789 |               123
+   4567890123456789 |               123
+                123 |  4567890123456789
+   4567890123456789 |               123
+-               123 |               456
+   4567890123456789 |  4567890123456789
+-  4567890123456789 | -4567890123456789
+   4567890123456789 |  4567890123456789
++               123 |  4567890123456789
+   4567890123456789 |  4567890123456789
+   4567890123456789 |  4567890123456789
+-  4567890123456789 |               123
++  4567890123456789 | -4567890123456789
++               123 |  4567890123456789
++  4567890123456789 | -4567890123456789
++               123 |                  
++               456 |                  
+   4567890123456789 |                  
+  -4567890123456789 |                  
+ (20 rows)
+@@ -5059,15 +5059,15 @@ select * from
+          Hash Cond: (d.q1 = c.q2)
+          ->  Nested Loop
+                Output: a.q1, a.q2, b.q1, d.q1, (COALESCE(b.q2, '42'::bigint)), (COALESCE((COALESCE(b.q2, '42'::bigint)), d.q2))
+-               ->  Hash Left Join
++               ->  Hash Right Join
+                      Output: a.q1, a.q2, b.q1, (COALESCE(b.q2, '42'::bigint))
+-                     Hash Cond: (a.q2 = b.q1)
+-                     ->  Seq Scan on public.int8_tbl a
+-                           Output: a.q1, a.q2
++                     Hash Cond: (b.q1 = a.q2)
++                     ->  Seq Scan on public.int8_tbl b
++                           Output: b.q1, COALESCE(b.q2, '42'::bigint)
+                      ->  Hash
+-                           Output: b.q1, (COALESCE(b.q2, '42'::bigint))
+-                           ->  Seq Scan on public.int8_tbl b
+-                                 Output: b.q1, COALESCE(b.q2, '42'::bigint)
++                           Output: a.q1, a.q2
++                           ->  Seq Scan on public.int8_tbl a
++                                 Output: a.q1, a.q2
+                ->  Seq Scan on public.int8_tbl d
+                      Output: d.q1, COALESCE((COALESCE(b.q2, '42'::bigint)), d.q2)
+          ->  Hash
